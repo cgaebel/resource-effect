@@ -17,7 +17,6 @@ module Control.Eff.Resource ( Resource
                             , unprotect
                             ) where
 
-import Control.Applicative
 import Control.Eff
 import Control.Eff.State.Strict
 
@@ -28,8 +27,9 @@ import Data.Typeable
 -- | A resource's state. Type parameter @r@ is the effect the resource
 --   deallocation will run in.
 data ResourceState r =
-        ResourceState {-# UNPACK #-} !Int                 -- ^ The 'next' int to insert.
-                                     !(IntMap (Eff r ())) -- ^ A map of cleanup handlers.
+        ResourceState
+          {-# UNPACK #-} !Int  -- ^ The 'next' int to insert.
+          !(IntMap (Eff r ())) -- ^ A map of cleanup handlers.
   deriving Typeable
 
 -- | The Resource effect. This effect keeps track of all registered actions,
@@ -111,6 +111,8 @@ unprotect (K k) =
 runResource :: Typeable r
             => Eff (Resource r :> r) a
             -> Eff r a
-runResource eff =
-  snd <$> runState (ResourceState 0 M.empty) eff
+runResource eff = do
+  (ResourceState _ toClean, res) <- runState (ResourceState 0 M.empty) eff
+  mapM_ snd (M.toDescList toClean)
+  return res
 {-# INLINE runResource #-}
