@@ -1,0 +1,19 @@
+language: haskell
+notifications:
+  email:
+    - cg.wowus.cg@gmail.com
+  on_success: always
+  on_failure: always
+
+before_install:
+    - cabal sandbox init
+    - cabal install -j --only-dependencies --enable-tests --enable-benchmarks --with-hsc2hs=/usr/bin/hsc2hs -O2
+
+install:
+    - cabal configure --enable-tests --enable-benchmarks -O2
+    - cabal build
+
+script:
+#    - cabal test --show-details=always --test-options="-a 1000 +RTS -N"
+#    - cabal bench || true
+#    - cabal haddock
