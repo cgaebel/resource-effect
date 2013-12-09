@@ -18,18 +18,19 @@ module Control.Eff.Resource ( Resource
                             ) where
 
 import Control.Eff
+import Control.Eff.Lift
 import Control.Eff.State.Strict
 
 import Data.IntMap.Strict ( IntMap )
 import qualified Data.IntMap.Strict as M
 import Data.Typeable
 
--- | A resource's state. Type parameter @r@ is the effect the resource
+-- | A resource's state. Type parameter @m@ is the Monad the resource
 --   deallocation will run in.
-data ResourceState r =
+data ResourceState m =
         ResourceState
           {-# UNPACK #-} !Int  -- ^ The 'next' int to insert.
-          !(IntMap (Eff r ())) -- ^ A map of cleanup handlers.
+          !(IntMap m) -- ^ A map of cleanup handlers.
   deriving Typeable
 
 -- | The Resource effect. This effect keeps track of all registered actions,
@@ -41,7 +42,7 @@ data ResourceState r =
 --   is a highly recommended optimization, as it will ensure that scarce
 --   resources are freed early. Note that calling release will deregister
 --   the action, so that a release action will only ever be called once. 
-type Resource r = State (ResourceState r)
+type Resource m = State (ResourceState m)
 
 -- | A lookup key for a specific release action. This value
 --   is returned by @register@ and @allocate@, and is passed to @release@.
@@ -60,21 +61,21 @@ withState f = do
 
 -- | Call a release action early, and deregister it from the list of
 --   cleanup actions to be performed.
-release :: (Typeable r, Member (Resource r) r)
+release :: (Typeable1 m, SetMember Lift (Lift m) r, Member (Resource (m ())) r)
         => ReleaseKey
         -> Eff r ()
 release (K k) = withState $ \old@(ResourceState cnt m) ->
   case M.lookup k m of
     Nothing      -> return (old, ())
     Just cleanup -> do
-      cleanup
+      () <- lift cleanup
       return (ResourceState cnt (M.delete k m), ())
 {-# INLINE release #-}
 
 -- | Register some action that will be called precisely once, either when
 --   'runResource' is called or when the 'ReleaseKey' is passed to 'release'.
-register :: (Typeable r, Member (Resource r) r)
-         => Eff r ()
+register :: (Typeable1 m, Member (Resource (m ())) r)
+         => m ()
          -> Eff r ReleaseKey
 register cleanup =
   withState $ \(ResourceState cnt oldMap) ->
@@ -82,12 +83,12 @@ register cleanup =
 {-# INLINE register #-}
 
 -- | Perform some allocation, and automatically register a cleanup action.
-allocate :: (Typeable r, Member (Resource r) r)
-         => Eff r a         -- ^ allocate
-         -> (a -> Eff r ()) -- ^ free resource
+allocate :: (Typeable1 m, Monad m, Member (Resource (m ())) r, SetMember Lift (Lift m) r)
+         => m a         -- ^ allocate
+         -> (a -> m ()) -- ^ free resource
          -> Eff r (ReleaseKey, a)
 allocate alloc dealloc = do
-  res <- alloc -- TODO: Protect against asynchronous exceptions. Patches welcome!
+  res <- lift alloc -- TODO: Protect against asynchronous exceptions. Patches welcome!
   k   <- register (dealloc res)
   return (k, res)
 {-# INLINE allocate #-}
@@ -97,9 +98,9 @@ allocate alloc dealloc = do
 --
 --   It returns an release action that should be run in order to clean
 --   resource or Nothing in case if resource is already freed. 
-unprotect :: (Typeable r, Member (Resource r) r)
+unprotect :: (Typeable1 m, Member (Resource (m ())) r)
           => ReleaseKey
-          -> Eff r (Maybe (Eff r ()))
+          -> Eff r (Maybe (m ()))
 unprotect (K k) =
   withState $ \old@(ResourceState cnt oldMap) ->
     case M.lookup k oldMap of
@@ -108,11 +109,11 @@ unprotect (K k) =
 {-# INLINE unprotect #-}
 
 -- | Unwrap a 'Resource' effect, and call all registered release actions. 
-runResource :: Typeable r
-            => Eff (Resource r :> r) a
+runResource :: (Typeable1 m, Monad m, SetMember Lift (Lift m) r)
+            => Eff (Resource (m ()) :> r) a
             -> Eff r a
 runResource eff = do
   (ResourceState _ toClean, res) <- runState (ResourceState 0 M.empty) eff
-  mapM_ snd (M.toDescList toClean)
+  lift $ mapM_ snd (M.toDescList toClean)
   return res
 {-# INLINE runResource #-}
