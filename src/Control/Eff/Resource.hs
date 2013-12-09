@@ -1,0 +1,116 @@
+{-# LANGUAGE TypeOperators #-}
+{-# LANGUAGE FlexibleContexts #-}
+{-# LANGUAGE BangPatterns #-}
+{-# LANGUAGE GeneralizedNewtypeDeriving #-}
+{-# LANGUAGE DeriveDataTypeable #-}
+{-# LANGUAGE Trustworthy #-}
+-- | Allocate resources which are guaranteed to be released.
+--
+--   For more information, see the @resourcet@ package.
+module Control.Eff.Resource ( Resource
+                            , ResourceState
+                            , ReleaseKey
+                            , runResource
+                            , allocate
+                            , register
+                            , release
+                            , unprotect
+                            ) where
+
+import Control.Applicative
+import Control.Eff
+import Control.Eff.State.Strict
+
+import Data.IntMap.Strict ( IntMap )
+import qualified Data.IntMap.Strict as M
+import Data.Typeable
+
+-- | A resource's state. Type parameter @r@ is the effect the resource
+--   deallocation will run in.
+data ResourceState r =
+        ResourceState {-# UNPACK #-} !Int                 -- ^ The 'next' int to insert.
+                                     !(IntMap (Eff r ())) -- ^ A map of cleanup handlers.
+  deriving Typeable
+
+-- | The Resource effect. This effect keeps track of all registered actions,
+--   and calls them upon exit (via 'runResource'). Actions may be registered
+--   via register, or resources may be allocated atomically via allocate.
+--   allocate corresponds closely to bracket.
+--
+--   Releasing may be performed before exit via the release function. This
+--   is a highly recommended optimization, as it will ensure that scarce
+--   resources are freed early. Note that calling release will deregister
+--   the action, so that a release action will only ever be called once. 
+type Resource r = State (ResourceState r)
+
+-- | A lookup key for a specific release action. This value
+--   is returned by @register@ and @allocate@, and is passed to @release@.
+newtype ReleaseKey = K Int
+    deriving Typeable
+
+withState :: (Typeable s, Member (State s) r)
+          => (s -> Eff r (s, a))
+          -> Eff r a
+withState f = do
+  oldState <- get
+  (newState, ret) <- f oldState
+  put newState
+  return ret
+{-# INLINE withState #-}
+
+-- | Call a release action early, and deregister it from the list of
+--   cleanup actions to be performed.
+release :: (Typeable r, Member (Resource r) r)
+        => ReleaseKey
+        -> Eff r ()
+release (K k) = withState $ \old@(ResourceState cnt m) ->
+  case M.lookup k m of
+    Nothing      -> return (old, ())
+    Just cleanup -> do
+      cleanup
+      return (ResourceState cnt (M.delete k m), ())
+{-# INLINE release #-}
+
+-- | Register some action that will be called precisely once, either when
+--   'runResource' is called or when the 'ReleaseKey' is passed to 'release'.
+register :: (Typeable r, Member (Resource r) r)
+         => Eff r ()
+         -> Eff r ReleaseKey
+register cleanup =
+  withState $ \(ResourceState cnt oldMap) ->
+    return (ResourceState (cnt+1) (M.insert cnt cleanup oldMap), K cnt)
+{-# INLINE register #-}
+
+-- | Perform some allocation, and automatically register a cleanup action.
+allocate :: (Typeable r, Member (Resource r) r)
+         => Eff r a         -- ^ allocate
+         -> (a -> Eff r ()) -- ^ free resource
+         -> Eff r (ReleaseKey, a)
+allocate alloc dealloc = do
+  res <- alloc -- TODO: Protect against asynchronous exceptions. Patches welcome!
+  k   <- register (dealloc res)
+  return (k, res)
+{-# INLINE allocate #-}
+
+-- | Unprotect resource from cleanup actions, this allowes you to send
+--   resource into another resourcet process and reregister it there.
+--
+--   It returns an release action that should be run in order to clean
+--   resource or Nothing in case if resource is already freed. 
+unprotect :: (Typeable r, Member (Resource r) r)
+          => ReleaseKey
+          -> Eff r (Maybe (Eff r ()))
+unprotect (K k) =
+  withState $ \old@(ResourceState cnt oldMap) ->
+    case M.lookup k oldMap of
+      Nothing    -> return (old, Nothing)
+      v@(Just _) -> return (ResourceState cnt (M.delete k oldMap), v)
+{-# INLINE unprotect #-}
+
+-- | Unwrap a 'Resource' effect, and call all registered release actions. 
+runResource :: Typeable r
+            => Eff (Resource r :> r) a
+            -> Eff r a
+runResource eff =
+  snd <$> runState (ResourceState 0 M.empty) eff
+{-# INLINE runResource #-}
