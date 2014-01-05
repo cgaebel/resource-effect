@@ -41,7 +41,7 @@ data ResourceState m =
 --   Releasing may be performed before exit via the release function. This
 --   is a highly recommended optimization, as it will ensure that scarce
 --   resources are freed early. Note that calling release will deregister
---   the action, so that a release action will only ever be called once. 
+--   the action, so that a release action will only ever be called once.
 type Resource m = State (ResourceState m)
 
 -- | A lookup key for a specific release action. This value
@@ -97,7 +97,7 @@ allocate alloc dealloc = do
 --   resource into another resourcet process and reregister it there.
 --
 --   It returns an release action that should be run in order to clean
---   resource or Nothing in case if resource is already freed. 
+--   resource or Nothing in case if resource is already freed.
 unprotect :: (Typeable1 m, Member (Resource (m ())) r)
           => ReleaseKey
           -> Eff r (Maybe (m ()))
@@ -108,7 +108,7 @@ unprotect (K k) =
       v@(Just _) -> return (ResourceState cnt (M.delete k oldMap), v)
 {-# INLINE unprotect #-}
 
--- | Unwrap a 'Resource' effect, and call all registered release actions. 
+-- | Unwrap a 'Resource' effect, and call all registered release actions.
 runResource :: (Typeable1 m, Monad m, SetMember Lift (Lift m) r)
             => Eff (Resource (m ()) :> r) a
             -> Eff r a
