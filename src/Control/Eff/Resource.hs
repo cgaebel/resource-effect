@@ -28,9 +28,11 @@ import Data.Typeable
 -- | A resource's state. Type parameter @m@ is the Monad the resource
 --   deallocation will run in.
 data ResourceState m =
+        -- | ResourceState takes the 'next' int to insert and a map of
+        -- cleanup handlers
         ResourceState
-          {-# UNPACK #-} !Int  -- ^ The 'next' int to insert.
-          !(IntMap m) -- ^ A map of cleanup handlers.
+          {-# UNPACK #-} !Int
+          !(IntMap m)
   deriving Typeable
 
 -- | The Resource effect. This effect keeps track of all registered actions,
